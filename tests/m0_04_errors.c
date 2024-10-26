@@ -2,29 +2,73 @@
 #include <msh_parse.h>
 
 #include <string.h>
+#include <stdlib.h>
 
 sunit_ret_t
 nocmd(void)
 {
-	/* add your own tests here. */
+	struct msh_sequence *s;
+	char *input;
 
-	return 0;
+	s = msh_sequence_alloc();
+	SUNIT_ASSERT("sequence allocation", s != NULL);
+
+	input = "ls |";
+	SUNIT_ASSERT("MSH_ERR_PIPE_MISSING_CMD for 'ls |'", msh_sequence_parse(input, s) == MSH_ERR_PIPE_MISSING_CMD);
+
+	msh_sequence_free(s);
+
+	s = msh_sequence_alloc();
+	SUNIT_ASSERT("sequence allocation", s != NULL);
+
+	input = "| ls";
+	SUNIT_ASSERT("MSH_ERR_PIPE_MISSING_CMD for '| ls'", msh_sequence_parse(input, s) == MSH_ERR_PIPE_MISSING_CMD);
+
+	msh_sequence_free(s);
+
+	return SUNIT_SUCCESS;
 }
 
 sunit_ret_t
 too_many_cmd(void)
 {
-	/* add your own tests here. */
+	struct msh_sequence *s;
+	char input[100] = "";
+	int i;
 
-	return 0;
+	s = msh_sequence_alloc();
+	SUNIT_ASSERT("sequence allocation", s != NULL);
+
+	for (i = 0; i <= MSH_MAXCMNDS + 5; i++) {
+		strcat(input, "ls");
+		if (i < MSH_MAXCMNDS) {
+			strcat(input, " | ");
+		}
+	}
+
+	SUNIT_ASSERT("MSH_ERR_TOO_MANY_CMDS", msh_sequence_parse(input, s) == MSH_ERR_TOO_MANY_CMDS);
+	msh_sequence_free(s);
+
+	return SUNIT_SUCCESS;
 }
 
 sunit_ret_t
 too_many_args(void)
 {
 	/* add your own tests here. */
+	struct msh_sequence *s = msh_sequence_alloc();
+	char input[2048];
+	int i;
 
-	return 0;
+	strcpy(input, "ls");
+	for (i = 0; i <= MSH_MAXARGS; i++) {
+		strcat(input, " arg");
+	}
+
+	SUNIT_ASSERT("MSH_ERR_TOO_MANY_ARGS", msh_sequence_parse(input, s) == MSH_ERR_TOO_MANY_ARGS);
+	msh_sequence_free(s);
+
+	return SUNIT_SUCCESS;
 }
 
 int
