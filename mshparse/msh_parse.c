@@ -22,6 +22,7 @@ struct msh_sequence {
 struct msh_pipeline {
 	struct msh_command *commands[MSH_MAXCMNDS];
     size_t num_commands;
+    //if it needs to run in background or no
     int background;
 };
 
@@ -34,13 +35,16 @@ struct msh_command {
 	char *program;
     char *args[MSH_MAXARGS];
     int numberArgs;
+    //shows this is the last command (helpful in parse)
     int final;
 };
 
 void
 msh_pipeline_free(struct msh_pipeline *p)
 {
+    //null check
 	if(p != NULL) {
+        //loop through and clear everything including the commands
 		for (size_t i = 0; i < p->num_commands; i++) {
 			free(p->commands[i]->program);
 			for (int j = 0; j < p->commands[i]->numberArgs; j++) {
@@ -55,7 +59,9 @@ msh_pipeline_free(struct msh_pipeline *p)
 void
 msh_sequence_free(struct msh_sequence *s)
 {
+    //null check
 	if(s != NULL) {
+        //loop and clear each embedded pipeline
 		for (size_t i = 0; i < s->num_pipelines; i++) {
 			if (s->pipelines[i] != NULL) {
 				msh_pipeline_free(s->pipelines[i]);
@@ -68,11 +74,14 @@ msh_sequence_free(struct msh_sequence *s)
 struct msh_sequence *
 msh_sequence_alloc(void)
 {
+    //allocate space
 	struct msh_sequence *allocated = malloc(sizeof(struct msh_sequence));
+    //null check
 	if (allocated == NULL) {
         free(allocated);
 		return NULL;
 	}
+    //initialize
 	allocated->num_pipelines = 0;
 	memset(allocated->pipelines, 0, sizeof(allocated->pipelines));
 	return allocated;
@@ -88,30 +97,36 @@ msh_pipeline_input(struct msh_pipeline *p)
 }
 
 static int cmnd_parse(char *str, struct msh_command **command) {
-
+    //string to follow through the command
 	struct msh_command *tempCommand = malloc(sizeof(struct msh_command));
+    //null check
     if (tempCommand == NULL) {
         return MSH_ERR_NOMEM;
     }
+    //initialize
     memset(tempCommand, 0, sizeof(struct msh_command));
     tempCommand->final = 0;
 
+    //counter/helper vairbales
     char *token;
     char *saveptr;
     size_t count = 1;
 
+    //get first piece and check its not null
     token = strtok_r(str, " ", &saveptr);
     if (token == NULL) {
         free(tempCommand);
         return MSH_ERR_NO_EXEC_PROG;
     }
 
+    //set the first piece we just got as the program and null check
     tempCommand->program = strdup(token);
     if (tempCommand->program == NULL) {
         free(tempCommand);
         return MSH_ERR_NOMEM;
     }
 
+    //edge test case to make sure first is the name and null check after strdup
     tempCommand->args[0] = strdup(tempCommand->program);
     if (tempCommand->args[0] == NULL) {
         free(tempCommand->program);
@@ -119,7 +134,9 @@ static int cmnd_parse(char *str, struct msh_command **command) {
         return MSH_ERR_NOMEM;
     }
 
+    //keep parsing all of the pieces
     while ((token = strtok_r(NULL, " ", &saveptr)) != NULL) {
+        //have more args than we are allowed and free everything (out of bounds)
         if (count >= MSH_MAXARGS) {
             for(size_t j = 0; j < count; j++) {
                 free(tempCommand->args[j]);
@@ -128,6 +145,7 @@ static int cmnd_parse(char *str, struct msh_command **command) {
             free(tempCommand);
             return MSH_ERR_TOO_MANY_ARGS;
         }
+        //store the piece and make sure it allocated
         tempCommand->args[count] = strdup(token);
         if (tempCommand->args[count] == NULL) {
             for (size_t j = 0; j < count - 1; j++) {
@@ -137,8 +155,10 @@ static int cmnd_parse(char *str, struct msh_command **command) {
             free(tempCommand);
             return MSH_ERR_NOMEM;
         }
+        //increment count
         count++;
     }
+    //store the count
     tempCommand->args[count] = NULL;
     tempCommand->numberArgs = count;
 
@@ -151,39 +171,40 @@ static int cmnd_parse(char *str, struct msh_command **command) {
 msh_err_t
 msh_sequence_parse(char *str, struct msh_sequence *seq)
 {
-
+    //base cases
 	if (str == NULL || seq == NULL) {
         return MSH_ERR_NOMEM;
     }
-
+    //get a helper string and make sure it allocated
     char *tempString = strdup(str);
     if (tempString == NULL) {
         return MSH_ERR_NOMEM;
     }
 
+    //splitting at the ;
     char *savePipeline;
     char *token = strtok_r(tempString, ";", &savePipeline);
     seq->num_pipelines = 0;
 
+    //edge cases to make sure its not missing a command (test case 4)
+    size_t len = strlen(token);
+    if (len == 0) {
+        free(tempString);
+        return MSH_ERR_PIPE_MISSING_CMD;
+    } else if (token[0] == '|' || token[len - 1] == '|') {
+        free(tempString);
+        return MSH_ERR_PIPE_MISSING_CMD;
+    }
+    for (size_t i = 0; i < len; i ++) {
+        if (token[i] == '|' && token[i+1] == '|') {
+            free(tempString);
+            return MSH_ERR_PIPE_MISSING_CMD;
+        }
+    }
+
+    //parsing the pipeline
     while (token != NULL) {
-        size_t len = strlen(token);
-        if (len == 0) {
-            free(tempString);
-            return MSH_ERR_PIPE_MISSING_CMD;
-        } else if (token[0] == '|' || token[len - 1] == '|') {
-            free(tempString);
-            return MSH_ERR_PIPE_MISSING_CMD;
-        }
-
-        for (size_t i = 0; i < len; i ++) {
-            if (token[i] == '|' && token[i+1] == '|') {
-                free(tempString);
-                return MSH_ERR_PIPE_MISSING_CMD;
-            }
-        }
-
-
-        // Allocate a new pipeline
+        //allocate a new pipeline and null check/startup
         struct msh_pipeline *pipeline = malloc(sizeof(struct msh_pipeline));
         if (pipeline == NULL) {
             free(tempString);
@@ -193,29 +214,29 @@ msh_sequence_parse(char *str, struct msh_sequence *seq)
         pipeline->num_commands = 0;
         pipeline->background = 0;
 
-        // Split the pipeline into commands using '|'
+        // Split the pipeline at the |
         char *saveptr_command;
         char *command_str = strtok_r(token, "|", &saveptr_command);
         while (command_str != NULL) {
-            // Trim leading whitespace
+            //get rid of the whitespace
             while (isspace((unsigned char)*command_str)) {
                 command_str++;
             }
-
+            //make sure its ont empy and free fi it is
             if (*command_str == '\0') {
                 // Free the current pipeline
                 msh_pipeline_free(pipeline);
                 free(tempString);
                 return MSH_ERR_PIPE_MISSING_CMD;
             }
-
+            //make sure we dont have too many commands and free if we do
             if (pipeline->num_commands >= MSH_MAXCMNDS) {
                 msh_pipeline_free(pipeline);
                 free(tempString);
                 return MSH_ERR_TOO_MANY_CMDS;
             }
 
-            // Parse the command
+            //parse the command and call the helper method
             struct msh_command *cmd = NULL;
             int parsed = cmnd_parse(command_str, &cmd);
             if (parsed != 0) {
@@ -224,30 +245,31 @@ msh_sequence_parse(char *str, struct msh_sequence *seq)
                 return parsed;
             }
 
-            // Assign the parsed command to the pipeline
-            pipeline->commands[pipeline->num_commands++] = cmd;
-
-            // Move to the next command
+            //put the command in the pipeline and incrememnt the commands
+            pipeline->commands[pipeline->num_commands] = cmd;
+            pipeline->num_commands++;
+            //go to the next command
             command_str = strtok_r(NULL, "|", &saveptr_command);
         }
 
+        //set the final variable to true
         if (pipeline->num_commands > 0) {
             pipeline->commands[pipeline->num_commands - 1]->final = 1;
         }
 
-        // Assign the parsed pipeline to the sequence
+        //check if we have too many pipelines
         if (seq->num_pipelines >= MSH_MAXCMNDS) {
             msh_pipeline_free(pipeline);
             free(tempString);
             return MSH_ERR_TOO_MANY_CMDS;
         }
-
-        seq->pipelines[seq->num_pipelines++] = pipeline;
-
+        //add the new pipeline to the sequence and increment
+        seq->pipelines[seq->num_pipelines] = pipeline;
+        seq->num_pipelines++;
         // Move to the next pipeline
         token = strtok_r(NULL, ";", &savePipeline);
     }
-
+    //free what we allocated
     free(tempString);
     return 0;
 
@@ -275,14 +297,27 @@ msh_sequence_parse(char *str, struct msh_sequence *seq)
 	return 0;*/
 
 
+/**
+ * `msh_sequence_pipeline` dequeues the first pipeline in the sequence.
+ *
+ * - `@s` - the sequence we're querying
+ * - `@return` - return a pointer to the zero-indexed `nth` command in
+ *     the pipeline, or `NULL` if `nth` >= the number of commands in
+ *     the pipeline. The caller of this function is passed the
+ *     ownership for the pipeline, thus must free the pipeline.
+ */
 struct msh_pipeline *
 msh_sequence_pipeline(struct msh_sequence *s)
 {
+    //null check
 	if (s != NULL && s->num_pipelines > 0) {
+        //store first pipeling
         struct msh_pipeline *p = s->pipelines[0];
+        //move all the other pipelines to the first place
         for (size_t i = 1; i < s->num_pipelines; i++) {
             s->pipelines[i - 1] = s->pipelines[i];
         }
+        //set last position to null and decrease the num of pipelines
         s->pipelines[s->num_pipelines - 1] = NULL;
         s->num_pipelines--;
         return p;

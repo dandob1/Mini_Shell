@@ -13,14 +13,16 @@ nocmd(void)
 	s = msh_sequence_alloc();
 	SUNIT_ASSERT("sequence allocation", s != NULL);
 
+	//no command after
 	input = "ls |";
 	SUNIT_ASSERT("MSH_ERR_PIPE_MISSING_CMD for 'ls |'", msh_sequence_parse(input, s) == MSH_ERR_PIPE_MISSING_CMD);
 
 	msh_sequence_free(s);
 
+	//second part of test
 	s = msh_sequence_alloc();
 	SUNIT_ASSERT("sequence allocation", s != NULL);
-
+	//no command before
 	input = "| ls";
 	SUNIT_ASSERT("MSH_ERR_PIPE_MISSING_CMD for '| ls'", msh_sequence_parse(input, s) == MSH_ERR_PIPE_MISSING_CMD);
 
@@ -32,16 +34,17 @@ nocmd(void)
 sunit_ret_t
 too_many_cmd(void)
 {
-	struct msh_sequence *s;
+	//start a sequence with too many inputs allowed
+	struct msh_sequence *s = msh_sequence_alloc();
 	char input[100] = "";
 	int i;
-
-	s = msh_sequence_alloc();
-	SUNIT_ASSERT("sequence allocation", s != NULL);
-
+	
+	//put more commands into the string than we can have
 	for (i = 0; i <= MSH_MAXCMNDS + 5; i++) {
+		//adds to input
 		strcat(input, "ls");
 		if (i < MSH_MAXCMNDS) {
+			//adds to input
 			strcat(input, " | ");
 		}
 	}
@@ -55,13 +58,15 @@ too_many_cmd(void)
 sunit_ret_t
 too_many_args(void)
 {
-	/* add your own tests here. */
+	//allocate the sequence
 	struct msh_sequence *s = msh_sequence_alloc();
-	char input[2048];
+	char input[100];
 	int i;
 
+	//build it with more args than we can have
 	strcpy(input, "ls");
-	for (i = 0; i <= MSH_MAXARGS; i++) {
+	for (i = 0; i <= MSH_MAXARGS + 5; i++) {
+		//adds to input
 		strcat(input, " arg");
 	}
 
