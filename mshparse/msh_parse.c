@@ -22,7 +22,6 @@ struct msh_sequence {
 struct msh_pipeline {
 	struct msh_command *commands[MSH_MAXCMNDS];
     size_t num_commands;
-    //if it needs to run in background or no
     int background;
 };
 
@@ -35,7 +34,6 @@ struct msh_command {
 	char *program;
     char *args[MSH_MAXARGS];
     int numberArgs;
-    //shows this is the last command (helpful in parse)
     int final;
 };
 
@@ -88,6 +86,14 @@ msh_sequence_alloc(void)
 }
 
 //dont need to do this
+/**
+ * `msh_pipeline_input` returns the string used as input for the
+ * pipeline. Most useful when printing out the "jobs" builtin command
+ * output.
+ *
+ * - `@p` - The borrowed pipeline for which we retrieve the input
+ * - `@return` - the borrowed input used to create the pipeline
+ */
 char *
 msh_pipeline_input(struct msh_pipeline *p)
 {
@@ -359,7 +365,18 @@ msh_command_final(struct msh_command *c)
     }
 }
 
-//dont need to do this
+//need to do this
+/**
+ * `msh_command_file_outputs` returns the files to which the standard
+ * output and the standard error should be written, or `NULL` if
+ * neither is specified.
+ *
+ * - `@c` - Command being queried.
+ * - `@stdout` - return value to hold the file name to which to send
+ *     the standard output of the command, or `NULL` if it should be
+ *     passed down the pipeline.
+ * - `@stderr` - same as for `stdout`, but for stadard error.
+ */
 void
 msh_command_file_outputs(struct msh_command *c, char **stdout, char **stderr)
 {
@@ -390,7 +407,44 @@ msh_command_args(struct msh_command *c)
 	}
 }
 
-//dont need to do this
+//need to do this
+/***
+ * `msg_command_putdata` and `msh_command_getdata` are functions that
+ * enable the shell to store some data for the command, and to
+ * retrieve that data later.
+ *
+ * For example, if the shell wants to track the `pid` of
+ * each command along with other data, it could:
+ *
+ * ```
+ * struct proc_data {
+ *     pid_t pid;
+ *     // ...
+ * };
+ * // ...
+ * struct proc_data *p = malloc(sizeof(struct proc_data));
+ * *p = { .pid = child_pid, };
+ * msh_command_putdata(c, p, free);
+ * // later, when we want to find the process pid
+ * if (msh_command_getdata(c)->pid == child_pid) {
+ *     // ...
+ * }
+ * ```
+ */
+
+/**
+ * `msh_command_putdata` stores `data` with the command. If a
+ * previous, different `data` value was passed in, it is freed.
+ *
+ * - `@c` - The command with which to store the data.
+ * - `@data` - client's data that can be stored with a command.
+ *     Ownership is passed to the data-structure. Thus, if the
+ *     sequence is freed, then the client's data is passed to the
+ *     `freefn`.
+ * - `@freefn` - the function to be used to free `data`. It is called
+ *     to free the `data` if 1. a new `data` value is passed in for a
+ *     command, or 2. if the sequence is freed.
+ */
 void
 msh_command_putdata(struct msh_command *c, void *data, msh_free_data_fn_t fn)
 {
@@ -399,7 +453,15 @@ msh_command_putdata(struct msh_command *c, void *data, msh_free_data_fn_t fn)
 	(void)fn;
 }
 
-//dont need to do this
+//need to do this
+/**
+ * `msh_command_getdata` returns the previously `put` value, or `NULL`
+ * if no value was previously `put`.
+ *
+ * - `@c` - the command with the associated data.
+ * - `@return` - the `data` associated with the command. These data is
+ *     borrowed by the client.
+ */
 void *
 msh_command_getdata(struct msh_command *c)
 {

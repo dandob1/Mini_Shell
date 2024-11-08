@@ -61,6 +61,7 @@ main(int argc, char *argv[])
 		err = msh_sequence_parse(str, s);
 		if (err != 0) {
 			printf("MSH Error: %s\n", msh_pipeline_err2str(err));
+			free(str);
 
 			return err;
 		}
@@ -68,7 +69,9 @@ main(int argc, char *argv[])
 		/* dequeue pipelines and sequentially execute them */
 		while ((p = msh_sequence_pipeline(s)) != NULL) {
 			msh_execute(p);
+			msh_pipeline_free(p);
 		}
+		free(str);
 	}
 
 	msh_sequence_free(s);
