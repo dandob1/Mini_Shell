@@ -46,23 +46,58 @@ struct msh_command {
  * execute. If the pipeline doesn't run in the background, this will
  * only return after the pipeline completes.
  */
-
-int execute_builtin(struct msh_command *cmd) {
-    if (strcmp(cmd->program, "cd") == 0) {
-        if (cmd->numberArgs < 2) {
+//execute built-in commands
+int execute_builtin(struct msh_command *command) {
+    //check if the command is cd
+    if (strcmp(command->program, "cd") == 0) {
+        //check that there sat least one argument for cd
+        if (command->numberArgs < 2) {
             fprintf(stderr, "cd: missing argument\n");
             return 1;
         }
-        // Directly use chdir without handling '~' or other expansions
-        if (chdir(cmd->args[1]) != 0) {
+
+        char *path = command->args[1];
+        //handle the ~
+        if (path[0] == '~') {
+            const char *home = getenv("HOME");
+            if (home == NULL) {
+                fprintf(stderr, "cd: HOME not set\n");
+                return 1;
+            }
+            //allocate enough space for the expanded path
+            size_t homeLenth = strlen(home);
+            size_t pathLength = strlen(path);
+            char *expandedPath = malloc(homeLenth + pathLength);
+            if (expandedPath == NULL) {
+                perror("malloc");
+                return 1;
+            }
+            strcpy(expandedPath, home);
+            strcat(expandedPath, path + 1); //skip the ~
+
+            //change directory
+            if (chdir(expandedPath) != 0) {
+                perror("cd");
+                free(expandedPath);
+                return 1;
+            }
+
+            free(expandedPath);
+            return 1;
+        }
+
+        //directly use chdir without handling other expansions
+        if (chdir(path) != 0) {
             perror("cd");
         }
         return 1;
-    } else if (strcmp(cmd->program, "exit") == 0) {
+        //check if it wants to exit
+    } else if (strcmp(command->program, "exit") == 0) {
         exit(0);
     }
     return 0;
 }
+
 
 
 void
@@ -73,6 +108,7 @@ msh_execute(struct msh_pipeline *p)
 		return;
 	}
 
+    //if theres only one command
     if (p->num_commands == 1) {
         struct msh_command *cmd = p->commands[0];
         if (execute_builtin(cmd)) {
@@ -80,15 +116,19 @@ msh_execute(struct msh_pipeline *p)
         }
     }
 
-    pid_t pid;
-    pid_t lastPid;
-    int input_fd = STDIN_FILENO;
+    //store pids of child process
+    pid_t pids[MSH_MAXCMNDS];
+    //count number of childeren
+    size_t num_pids = 0;
+    //initial input
+    int inputfd = STDIN_FILENO;
     int pipefd[2];
 
     //execute commands
     for (size_t i = 0; i < p->num_commands; i++) {
         struct msh_command *command = p->commands[i];
 
+        //create a pipe if its not the last command
         if (i < p->num_commands - 1) {
             if (pipe(pipefd) == -1) {
                 perror("pipe");
@@ -96,22 +136,25 @@ msh_execute(struct msh_pipeline *p)
             }
         }
 
-        pid = fork();
+        pid_t pid = fork();
 
-        //child process
+        //fork error
         if (pid == -1) {
             perror("fork");
             exit(1);
+            //child process
         } else if (pid == 0) {
 
-            if (input_fd != STDIN_FILENO) {
-                if (dup2(input_fd, STDIN_FILENO) == -1) {
+            //if theres a input duplicate it
+            if (inputfd != STDIN_FILENO) {
+                if (dup2(inputfd, STDIN_FILENO) == -1) {
                     perror("dup2");
                     exit(1);
                 }
-                close(input_fd);
+                close(inputfd);
             }
 
+            //if its not the last command set up a pipe
             if (i < p->num_commands - 1) {
                 if (dup2(pipefd[1], STDOUT_FILENO) == -1) {
                     perror("dup2");
@@ -121,28 +164,34 @@ msh_execute(struct msh_pipeline *p)
                 close(pipefd[1]);
             }
 
+            //execute command and print if theres an error
             execvp(command->program, command->args);
             perror("execvp");
             exit(1);
         } else {
+            //add child pid
+            pids[num_pids++] = pid;
 
-            lastPid = pid;
-
-            if (input_fd != STDIN_FILENO) {
-                close(input_fd);
+            //close the input if its not the standard input
+            if (inputfd != STDIN_FILENO) {
+                close(inputfd);
             }
 
+            //if its not the last command set up the input for the next command
             if (i < p->num_commands - 1) {
                 close(pipefd[1]);
-                input_fd = pipefd[0];
+                inputfd = pipefd[0];
             }
         }
     }
 
     if (!p->background) {
-        int status;
-        if (waitpid(lastPid, &status, 0) == -1) {
-            perror("waitpid");
+        //wait for child processes
+        for (size_t i = 0; i < num_pids; i++) {
+            int status;
+            if (waitpid(pids[i], &status, 0) == -1) {
+                perror("waitpid");
+            }
         }
     }
 
