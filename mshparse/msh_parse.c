@@ -23,6 +23,7 @@ struct msh_pipeline {
 	struct msh_command *commands[MSH_MAXCMNDS];
     size_t num_commands;
     int background;
+    char *input;
 };
 
 /**
@@ -35,6 +36,13 @@ struct msh_command {
     char *args[MSH_MAXARGS];
     int numberArgs;
     int final;
+    void *data;
+    //function to free data
+    msh_free_data_fn_t fn;
+    //redirect output
+    char *stdout_file;
+    //redirect input
+    char *stderr_file;
 };
 
 void
@@ -48,8 +56,16 @@ msh_pipeline_free(struct msh_pipeline *p)
 			for (int j = 0; j < p->commands[i]->numberArgs; j++) {
                     free(p->commands[i]->args[j]);
             }
+            free(p->commands[i]->stdout_file);
+            free(p->commands[i]->stderr_file);
+
+            if(p->commands[i]->data != NULL && p->commands[i]->fn != NULL) {
+                p->commands[i]->fn(p->commands[i]->data);
+            }
 			free(p->commands[i]);
 		}
+
+        free(p->input);
 		free(p);
 	}
 }
@@ -85,7 +101,6 @@ msh_sequence_alloc(void)
 	return allocated;
 }
 
-//dont need to do this
 /**
  * `msh_pipeline_input` returns the string used as input for the
  * pipeline. Most useful when printing out the "jobs" builtin command
@@ -97,9 +112,11 @@ msh_sequence_alloc(void)
 char *
 msh_pipeline_input(struct msh_pipeline *p)
 {
-	(void)p;
+    if (p == NULL) {
+        return NULL;
+    }
 
-	return NULL;
+	return p->input;
 }
 
 static int cmnd_parse(char *str, struct msh_command **command) {
@@ -112,11 +129,15 @@ static int cmnd_parse(char *str, struct msh_command **command) {
     //initialize
     memset(tempCommand, 0, sizeof(struct msh_command));
     tempCommand->final = 0;
+    tempCommand->stdout_file = NULL;
+    tempCommand->stderr_file = NULL;
+    tempCommand->data = NULL;
+    tempCommand->fn = NULL;
 
     //counter/helper vairbales
     char *token;
     char *saveptr;
-    size_t count = 1;
+    size_t count = 0;
 
     //get first piece and check its not null
     token = strtok_r(str, " ", &saveptr);
@@ -133,44 +154,167 @@ static int cmnd_parse(char *str, struct msh_command **command) {
     }
 
     //edge test case to make sure first is the name and null check after strdup
-    tempCommand->args[0] = strdup(tempCommand->program);
-    if (tempCommand->args[0] == NULL) {
+    tempCommand->args[count] = strdup(tempCommand->program);
+    if (tempCommand->args[count] == NULL) {
         free(tempCommand->program);
-        free(tempCommand->args);
+        for (size_t j = 0; j < count; j++) {
+            free(tempCommand->args[j]);
+        }
+        free(tempCommand);
         return MSH_ERR_NOMEM;
     }
+    count++;
 
     //keep parsing all of the pieces
     while ((token = strtok_r(NULL, " ", &saveptr)) != NULL) {
-        //have more args than we are allowed and free everything (out of bounds)
-        if (count >= MSH_MAXARGS) {
-            for(size_t j = 0; j < count; j++) {
-                free(tempCommand->args[j]);
+        if ((strcmp(token, "1>") == 0) || (strcmp(token, "1>>") == 0) ||
+            (strcmp(token, "2>") == 0) || (strcmp(token, "2>>") == 0) || 
+            (strcmp(token, ">") == 0) || (strcmp(token, ">>") == 0) ||
+            (strcmp(token, "<") == 0)) {
+
+            //next token must be the filename
+            char *filename = strtok_r(NULL, " ", &saveptr);
+            if (filename == NULL) {
+                //error qand free everything since there was no filename
+                for (size_t j = 0; j < count; j++) {
+                    free(tempCommand->args[j]);
+                }
+                free(tempCommand->program);
+                free(tempCommand);
+                return MSH_ERR_NO_REDIR_FILE;
             }
-            free(tempCommand->program);
-            free(tempCommand);
-            return MSH_ERR_TOO_MANY_ARGS;
-        }
-        //store the piece and make sure it allocated
-        tempCommand->args[count] = strdup(token);
-        if (tempCommand->args[count] == NULL) {
-            for (size_t j = 0; j < count - 1; j++) {
-                free(tempCommand->args[j]);
+
+            if (strcmp(token, "<") == 0) {
+                //input redirection
+                //use data to store stdin filename
+                char *infile = strdup(filename);
+                if (!infile) {
+                    for (size_t j = 0; j < count; j++) {
+                        free(tempCommand->args[j]);
+                    }
+                    free(tempCommand->program);
+                    free(tempCommand);
+                    return MSH_ERR_NOMEM;
+                }
+                // put data into command->data
+                msh_command_putdata(tempCommand, infile, free);
+                continue;
+            } 
+            int fd;
+            int append = 0;
+
+            if (strcmp(token, ">") == 0) {
+                fd = 1;
+                append = 0;
+            } else if (strcmp(token, ">>") == 0) {
+                fd = 1;
+                append = 1;
+            } else if (strcmp(token, "1>") == 0) {
+                fd = 1;
+                append = 0;
+            } else if (strcmp(token, "1>>") == 0) {
+                fd = 1;
+                append = 1;
+            } else if (strcmp(token, "2>") == 0) {
+                fd = 2;
+                append = 0;
+            } else if (strcmp(token, "2>>") == 0) {
+                fd = 2;
+                append = 1;
+            } else {
+                for (size_t j = 0; j < count; j++) {
+                    free(tempCommand->args[j]);
+                }
+                free(tempCommand->program);
+                free(tempCommand);
+                return MSH_ERR_SEQ_REDIR_OR_BACKGROUND_MISSING_CMD;
             }
-            free(tempCommand->program);
-            free(tempCommand);
-            return MSH_ERR_NOMEM;
+
+        
+            //stdout handing
+            char *filename_dup;
+            if (append) {
+                filename_dup = malloc(strlen(filename) + 3);
+                if (!filename_dup) {
+                    for (size_t j = 0; j < count; j++) {
+                        free(tempCommand->args[j]);
+                    }
+                    free(tempCommand->program);
+                    free(tempCommand);
+                    return MSH_ERR_NOMEM;
+                }
+                strcpy(filename_dup, ">>");
+                strcat(filename_dup, filename);
+            } else {
+                filename_dup = strdup(filename);
+                if (!filename_dup) {
+                    for (size_t j = 0; j < count; j++) {
+                        free(tempCommand->args[j]);
+                    }
+                    free(tempCommand->program);
+                    free(tempCommand);
+                    return MSH_ERR_NOMEM;
+                }
+            }
+
+            if (fd == 1) {
+                //you are already handling one file so error for multiple redirections
+                if (tempCommand->stdout_file != NULL) {
+                    free(filename_dup);
+                    for (size_t j = 0; j < count; j++) {
+                        free(tempCommand->args[j]);
+                    }
+                    free(tempCommand->program);
+                    free(tempCommand->stdout_file);
+                    free(tempCommand);
+                    return MSH_ERR_MULT_REDIRECTIONS;
+                }
+                tempCommand->stdout_file = filename_dup;
+            } else {
+                //you already redirected once so now theres an eror
+                if (tempCommand->stderr_file != NULL) {
+                    free(filename_dup);
+                    for (size_t j = 0; j < count; j++) {
+                        free(tempCommand->args[j]);
+                    }
+                    free(tempCommand->program);
+                    free(tempCommand->stderr_file);
+                    free(tempCommand);
+                    return MSH_ERR_MULT_REDIRECTIONS;
+                }
+                tempCommand->stderr_file = filename_dup;
+                //normal argument
+            } 
+        } else {
+            //have more args than we are allowed and free everything
+            if (count >= MSH_MAXARGS) {
+                for (size_t j = 0; j < count; j++) {
+                    free(tempCommand->args[j]);
+                }
+                free(tempCommand->program);
+                free(tempCommand);
+                return MSH_ERR_TOO_MANY_ARGS;
+            }
+            //store the piece and make sure it allocated
+            tempCommand->args[count] = strdup(token);
+            if (tempCommand->args[count] == NULL) {
+                for (size_t j = 0; j < count; j++) {
+                    free(tempCommand->args[j]);
+                }
+                free(tempCommand->program);
+                free(tempCommand);
+                return MSH_ERR_NOMEM;
+            }
+            count++;
         }
-        //increment count
-        count++;
     }
+
     //store the count
     tempCommand->args[count] = NULL;
-    tempCommand->numberArgs = count;
+    tempCommand->numberArgs = (int)count;
 
     *command = tempCommand;
     return 0;
-
 
 }
 
@@ -192,35 +336,72 @@ msh_sequence_parse(char *str, struct msh_sequence *seq)
     char *token = strtok_r(tempString, ";", &savePipeline);
     seq->num_pipelines = 0;
 
-    //edge cases to make sure its not missing a command (test case 4)
-    size_t len = strlen(token);
-    if (len == 0) {
-        free(tempString);
-        return MSH_ERR_PIPE_MISSING_CMD;
-    } else if (token[0] == '|' || token[len - 1] == '|') {
-        free(tempString);
-        return MSH_ERR_PIPE_MISSING_CMD;
-    }
-    for (size_t i = 0; i < len; i ++) {
-        if (token[i] == '|' && token[i+1] == '|') {
+    //parsing the pipeline
+    while (token != NULL) {
+        //edge cases to make sure its not missing a command (test case 4)
+        size_t len = strlen(token);
+
+        //trim leading whitespace
+        while (len > 0 && isspace((unsigned char)*token)) {
+            token++;
+            len = strlen(token);
+        }
+
+        //trim trailing whitespace
+        while (len > 0 && isspace((unsigned char)token[len - 1])) {
+            token[len - 1] = '\0';
+            len--;
+        }
+        
+        //base case, theres no command
+        if (len == 0) {
+            free(tempString);
+            return MSH_ERR_PIPE_MISSING_CMD;
+        //theres 2 | following one another, error
+        } else if (token[0] == '|' || token[len - 1] == '|') {
             free(tempString);
             return MSH_ERR_PIPE_MISSING_CMD;
         }
-    }
+        for (size_t i = 0; i < len; i ++) {
+            if (token[i] == '|' && token[i+1] == '|') {
+                free(tempString);
+                return MSH_ERR_PIPE_MISSING_CMD;
+            }
+        }
 
-    //parsing the pipeline
-    while (token != NULL) {
         //allocate a new pipeline and null check/startup
         struct msh_pipeline *pipeline = malloc(sizeof(struct msh_pipeline));
         if (pipeline == NULL) {
             free(tempString);
             return MSH_ERR_NOMEM;
         }
+        //initialize the pipeline
         memset(pipeline->commands, 0, sizeof(pipeline->commands));
         pipeline->num_commands = 0;
         pipeline->background = 0;
+        pipeline->input = strdup(token);
+        if (pipeline->input == NULL) {
+            free(pipeline);
+            free(tempString);
+            return MSH_ERR_NOMEM;
+        }
 
-        // Split the pipeline at the |
+        //check for & at the end of the pipeline
+        if (len > 0 && token[len - 1] == '&') {
+            // Set the pipeline to run in the background
+            pipeline->background = 1;
+
+            //remove '&' and any spaces from the pipeline input
+            token[len - 1] = '\0';
+            len--;
+            while (len > 0 && isspace((unsigned char)token[len - 1])) {
+                token[len - 1] = '\0';
+                len--;
+            }
+            
+        }
+
+        //split the pipeline at the |
         char *saveptr_command;
         char *command_str = strtok_r(token, "|", &saveptr_command);
         while (command_str != NULL) {
@@ -365,7 +546,6 @@ msh_command_final(struct msh_command *c)
     }
 }
 
-//need to do this
 /**
  * `msh_command_file_outputs` returns the files to which the standard
  * output and the standard error should be written, or `NULL` if
@@ -378,12 +558,28 @@ msh_command_final(struct msh_command *c)
  * - `@stderr` - same as for `stdout`, but for stadard error.
  */
 void
-msh_command_file_outputs(struct msh_command *c, char **stdout, char **stderr)
+msh_command_file_outputs(struct msh_command *c, char **stdout_file, char **stderr_file)
 {
-	(void)c;
-	(void)stdout;
-	(void)stderr;
+    //check if its null
+    if (c == NULL) {
+        if (stdout_file != NULL) {
+            *stdout_file = NULL;
+        }
+        if (stderr_file != NULL) {
+            *stderr_file = NULL;
+        }
+        return;
+    }
+
+    //its not null so redirect to a new file
+    if (stdout_file != NULL) {
+        *stdout_file = c->stdout_file;
+    }
+    if (stderr_file != NULL) {
+        *stderr_file = c->stderr_file;
+    }
 }
+
 
 char *
 msh_command_program(struct msh_command *c)
@@ -407,7 +603,6 @@ msh_command_args(struct msh_command *c)
 	}
 }
 
-//need to do this
 /***
  * `msg_command_putdata` and `msh_command_getdata` are functions that
  * enable the shell to store some data for the command, and to
@@ -448,12 +643,19 @@ msh_command_args(struct msh_command *c)
 void
 msh_command_putdata(struct msh_command *c, void *data, msh_free_data_fn_t fn)
 {
-	(void)c;
-	(void)data;
-	(void)fn;
+    //null check and exit if there is no command
+	if (c == NULL) {
+        return;
+    //data exists and has a free funciton you free the current data
+    } else if (c->data != NULL && c->fn != NULL) {
+        c->fn(c->data);
+    }
+
+    //assignt he data and the function
+    c->data = data;
+    c->fn = fn;
 }
 
-//need to do this
 /**
  * `msh_command_getdata` returns the previously `put` value, or `NULL`
  * if no value was previously `put`.
@@ -465,7 +667,10 @@ msh_command_putdata(struct msh_command *c, void *data, msh_free_data_fn_t fn)
 void *
 msh_command_getdata(struct msh_command *c)
 {
-	(void)c;
+    //null check and return the data
+	if (c == NULL) {
+        return NULL;
+    }
 
-	return NULL;
+	return c->data;
 }
